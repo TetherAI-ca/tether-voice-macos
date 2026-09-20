@@ -2,7 +2,7 @@
 
 Voice and typed computer use for macOS. You say what you want. Jev picks the next on-screen action. macOS performs it. No screenshots: the app reads the screen through the Accessibility tree.
 
-A macOS fork of [jev-use](https://github.com/savka777/jev-use) with a compact, expanding voice notch powered by [DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit). Both upstream projects are MIT licensed.
+A macOS fork of [jev-use](https://github.com/savka777/jev-use) with a voice notch that appears when needed, powered by [DynamicNotchKit](https://github.com/MrKai77/DynamicNotchKit). Both upstream projects are MIT licensed.
 
 ## Quick start
 
@@ -23,25 +23,27 @@ If you used Desktop Voice before, quit it first so the speech shortcut is free. 
 In setup: save your TypeSafe API key (stored in the Keychain), then allow Accessibility, microphone and speech.
 
 Hold **Control–Option–Space**, speak, release. **Escape** cancels an active command
-or collapses an idle notch. Type a command in **Settings and commands**, or from a
+or hides an idle notch. Type a command in **Settings and commands**, or from a
 shell: `scripts/say.sh "Open Finder"`.
 
 ## Voice notch
 
-The voice interface stays compact at the top center of your primary display.
-Hover over either side or click it to expand. Speaking expands it automatically
-and keeps progress visible until the command ends. Results stay open for four
-seconds before the notch compacts, unless you are hovering or it needs an answer
-to a clarification question.
+The voice interface stays completely hidden while idle, with no logo or shortcut
+icons beside the camera notch. Hold Control–Option–Space to show it at the top
+center of your primary display. It stays open during speech and command execution.
+Results remain visible for four seconds, then the notch disappears. Hovering over
+an open result keeps it readable; hovering at the top of the screen when hidden
+does not open it. Clarification questions stay visible until answered or dismissed.
 
 The expanded view contains the speech pixels, transcript, status, Settings button,
-and a Cancel button while a command is running. The up-chevron collapses it when
+and a Cancel button while a command is running. The up-chevron hides it when
 idle. The menu-bar icon offers **Show voice notch**, **Hide voice notch**, settings,
 and cancellation. Hiding it while busy also cancels pending work.
 
 On displays without a physical notch, it uses the same top-edge notch presentation.
 The panel does not move keyboard focus to Tether Voice when it opens. Closing Settings
-restores the compact notch after setup. The visualizer runs only while expanded;
+leaves the notch hidden unless a command or clarification is pending. Typed commands
+and the explicit **Show voice notch** menu action also open it. The visualizer runs only while visible;
 the speech pixels and presentation transitions respect macOS Reduce Motion.
 
 This replaces the draggable floating widget. Its saved position is no longer used.
@@ -51,10 +53,12 @@ This replaces the draggable floating widget. Its saved position is no longer use
 Quit Tether Voice before running `swift test` and `bash build.sh`. Then reopen it
 with `open "$HOME/Applications/Tether Voice.app"` and check:
 
-- It starts compact; hovering expands it and leaving compacts it.
+- Launch and closing Settings leave no logo, shortcut icons, or panel at the notch.
+- Hovering over the camera notch while idle does not open the voice interface.
 - Holding the speech shortcut expands it without taking focus from the target app.
-- A command stays expanded if you move the pointer away; its result remains readable.
-- Rapid hover changes and pressing the shortcut during collapse do not leave it hidden.
+- A command stays expanded if you move the pointer away; its result stays readable for four seconds, then disappears.
+- Hovering over a result keeps it visible; moving away hides it after the remaining result time or 0.6 seconds, whichever is longer.
+- Pressing the shortcut while the notch is hiding reopens it for the new command.
 - Escape and Cancel stop pending work; clarification questions stay visible.
 - Settings and its close/Done controls return to the notch, with keys and permissions intact.
 - The menu-bar Show and Hide commands work, including while speaking.

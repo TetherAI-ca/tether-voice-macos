@@ -139,7 +139,7 @@ final class AppModel: ObservableObject {
         }
         hotKey.onCancel = { [weak self] in
             if self?.isBusy == true { self?.cancel() }
-            else { self?.collapseVoiceNotch() }
+            else { self?.hideVoiceNotch() }
         }
         do { try hotKey.register(); shortcutReady = true }
         catch {
@@ -151,7 +151,6 @@ final class AppModel: ObservableObject {
             headline = "Waiting for Keychain…"
             detail = "Approve the saved-key prompt on your Mac if it appears."
         }
-        showCommandNotch()
         keyTask = Task {
             do {
                 let saved = try await Task.detached(priority: .userInitiated) { try KeyStore.read() }.value
@@ -1197,16 +1196,16 @@ final class AppModel: ObservableObject {
             wordTask?.cancel(); wordTask = nil
             word = nil
         }
-        notchController.show(expanded: expanded || isBusy)
+        if expanded || isBusy || needsClarification {
+            notchController.show()
+        } else {
+            voiceNotch?.hide()
+        }
     }
 
     func hideVoiceNotch() {
         if isBusy { cancel(showStatus: false) }
         voiceNotch?.hide()
-    }
-
-    func collapseVoiceNotch() {
-        voiceNotch?.collapse()
     }
 
     private var notchController: VoiceNotchController {
@@ -1217,7 +1216,7 @@ final class AppModel: ObservableObject {
     }
 
     private func showCommandNotch() {
-        notchController.show(expanded: true)
+        notchController.show()
     }
 
     func shutdown() {
@@ -1285,9 +1284,9 @@ private struct SettingsView: View {
                 Text("Release to act. Escape stops pending work.")
                 Text("Try “Open Desktop”, “Open Brave, go to google.com and type in hello”, or “Open Codex and type this: hello”.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("The notch stays compact. Hover to expand it; speaking keeps it open until your command finishes.")
+                Text("The notch stays hidden until you hold the shortcut. It shows your command and result, then hides again.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("Done — use voice notch") { model.showVoiceNotch(expanded: false) }.disabled(!model.setupComplete)
+                Button("Done") { model.showVoiceNotch(expanded: false) }.disabled(!model.setupComplete)
             }
             Divider()
             VStack(alignment: .leading, spacing: 8) {

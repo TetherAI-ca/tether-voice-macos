@@ -3,7 +3,9 @@
 ## Goal and agreed behavior
 
 Replace the draggable voice widget with a DynamicNotchKit presentation. The user
-selected a compact notch at idle that expands on hover or when speaking. Keep the
+now wants the notch completely hidden at idle, including the logo and shortcut
+icons. It appears when they press Control–Option–Space. This replaces the earlier
+compact-at-idle and hover-to-open preference. Keep the
 current command execution, TypeSafe integration, and speech shortcut. Publish the
 customized fork as Tether Voice.
 
@@ -15,10 +17,11 @@ customized fork as Tether Voice.
   hover behavior, transition configuration, and notch views before changing calls.
 - It requires a Swift 6 toolchain. Tether Voice retains its macOS 14.2 deployment target
   and existing Swift language mode; build with Xcode 16 or newer.
-- The dependency's floating style hides on `compact()`. Use `.notch` to retain a
-  compact top-edge presentation on displays without a physical notch.
-- Hover behavior does not expand the library's panel by itself. The app observes
-  the public `isHovering` publisher and requests transitions.
+- Use the expanded-only DynamicNotch initializer with empty compact content.
+  Keep `.notch` style for a top-edge presentation on every display. Never request
+  compact mode.
+- Observe the public `isHovering` publisher only to keep an already visible result
+  readable. Hovering must not reveal a hidden notch.
 - The library's `state` property is internal. Track completed presentation requests
   in the controller instead of reaching into that property.
 
@@ -27,37 +30,41 @@ customized fork as Tether Voice.
 1. Add and catalog the pinned reference. Add the exact Swift package dependency to
    `Package.swift`, linked only by `JevDesktop`.
 2. Add `VoiceNotchController` in `Sources/JevDesktop/VoiceNotch.swift`. It owns one
-   retained DynamicNotch instance, hover observation, collapse timing, and serialized
-   presentation requests. Recompute the requested destination after each awaited
-   transition so pending collapse work cannot hide a newly started command.
+   retained DynamicNotch instance, hover observation, dismissal timing, and serialized
+   hidden/expanded requests. Recompute the requested destination after each awaited
+   transition so pending dismissal work cannot hide a newly started command.
 3. Connect AppModel's presentation methods and busy transitions to the controller.
-   Show compact after setup, expand on speech/commands, show results for four seconds,
-   and hold clarification questions open. Hover exit compacts after 0.6 seconds when
-   idle. Settings hides the notch; closing Settings restores it after setup.
-4. Present compact leading/trailing controls and expanded content with speech pixels,
-   transcript, status, settings, cancellation, and collapse. Move the existing pixel
+   Do not show a notch while loading the key or after setup. Expand on speech/commands,
+   show results for four seconds, then hide. Hold clarification questions open.
+   Hover exit hides after the remaining result time or 0.6 seconds, whichever is
+   longer. Settings hides the notch; closing it restores only a pending command or
+   clarification, otherwise the notch stays hidden.
+4. Present expanded content with speech pixels, transcript, status, settings,
+   cancellation, and a Hide control. Remove the compact logo and shortcut controls. Move the existing pixel
    drawing code to `VoicePixelField.swift` without changing its rendering algorithm.
 5. Retain the existing menu-bar access, with explicit Show and Hide actions. Escape
-   cancels busy work and compacts an idle notch. Hide cancels busy work and removes
+   cancels busy work and hides an idle notch. Hide cancels busy work and removes
    the notch; the next command or Show action restores it.
 6. Document the toolchain and run the Mac validation checklist in `README.md`.
 
 ## Lifecycle and accessibility
 
 The primary display owns the notch, matching DynamicNotchKit's display-change
-handling. Opening it uses a nonactivating panel. Serialize `expand`, `compact`, and
-`hide` because they animate asynchronously. Do not enable the dependency's
+handling. Opening it uses a nonactivating panel. Serialize `expand` and `hide`
+because they animate asynchronously. Do not enable the dependency's
 `keepVisible` behavior: an explicit Settings/Hide action must work while hovered.
-Stop the system-audio visualizer when compact or hidden. Release timers and close
+Stop the system-audio visualizer when hidden. Release timers and close
 the panel on shutdown. Honor Reduce Motion in the pixel view and configured
 presentation animations. Give icon controls accessibility labels.
 
 ## Acceptance criteria
 
-- After setup, launch shows a compact notch at the top center of the primary display.
-- Hover or a compact control click expands it; leaving compacts it when idle.
+- Launch, key loading, and closing Settings while idle show no notch or side icons.
+- Hovering while hidden does not reveal any controls.
+- The speech shortcut opens the notch on the primary display. Typed commands and
+  the explicit Show menu action remain available.
 - Speaking and active commands remain expanded even when the pointer leaves.
-- Completion stays readable before collapse. Clarification stays open until answered
+- Completion stays readable for four seconds before the notch disappears. Clarification stays open until answered
   or explicitly dismissed; reopening must not clear its question.
 - Settings, cancellation, explicit Hide/Show, and rapid transitions work together.
 - Speech, typed commands, keys, permissions, and the target app's keyboard focus
@@ -77,8 +84,9 @@ The old widget-position preference is unused. Build and locally sign through
 
 The implementation workspace is Linux without Swift or the macOS SDK. Source and
 syntax checks here cannot establish successful compilation or native UI behavior.
-Dependency resolution, `swift test`, `bash build.sh`, and the manual checklist remain
-required on the user's Mac before treating the UI as verified.
+GitHub Actions runs dependency resolution, `swift test`, and `bash build.sh` on
+macOS. The manual checklist still requires the user's Mac before treating the UI
+behavior as verified.
 
 Checks completed in the implementation workspace:
 
@@ -87,8 +95,10 @@ Checks completed in the implementation workspace:
 - The extracted pixel renderer matches the original implementation apart from its
   imports and file-level access modifier.
 - The package's exact dependency version matches the reference checkout's tag.
-- `git diff --check` passed. A patch was applied to a temporary clean clone and its
-  resulting changed files were compared with the working copy.
+- `git diff --check` passed.
+- The initial notch implementation at `1780fbd` passed macOS tests, release build,
+  and app signing in GitHub Actions. Run the same workflow for this idle-visibility
+  update; hardware behavior still needs the manual checklist.
 
 The repository includes a macOS GitHub Actions workflow for tests and a release build.
 Hardware behavior still requires the manual checklist.

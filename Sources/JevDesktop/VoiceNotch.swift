@@ -6,78 +6,65 @@ import SwiftUI
 /// Owns presentation only. Speech, command execution, and cancellation stay in AppModel.
 @MainActor
 final class VoiceNotchController {
+    private enum PresentationState: Equatable {
+        case hidden, expanded
+    }
+
     private weak var model: AppModel?
-    private let notch: DynamicNotch<VoiceNotchContent, VoiceNotchLeading, VoiceNotchTrailing>
+    private let notch: DynamicNotch<VoiceNotchContent, EmptyView, EmptyView>
     private var hoverSubscription: AnyCancellable?
     private var transitionTask: Task<Void, Never>?
-    private var collapseTask: Task<Void, Never>?
+    private var dismissalTask: Task<Void, Never>?
     private var holdExpandedUntil: Date?
-    private var requestedState: DynamicNotchState = .hidden
-    private var appliedState: DynamicNotchState = .hidden
+    private var requestedState: PresentationState = .hidden
+    private var appliedState: PresentationState = .hidden
     private var isVisible = false
     private var isHovering = false
-    private var ignoreHoverUntilExit = false
 
     init(model: AppModel) {
         self.model = model
-        // Floating style hides on compact(). Notch style also supplies a top-edge
-        // compact presentation on external displays through its menu-bar geometry.
+        // No compact wings: the notch is hidden until a command or explicit Show.
+        // Keep the same top-edge presentation on displays without a physical notch.
         notch = DynamicNotch(hoverBehavior: [.increaseShadow], style: .notch) {
             VoiceNotchContent(model: model, speech: model.speech)
-        } compactLeading: {
-            VoiceNotchLeading(model: model)
-        } compactTrailing: {
-            VoiceNotchTrailing(model: model)
         }
         hoverSubscription = notch.$isHovering.removeDuplicates().sink { [weak self] hovering in
             self?.hoverChanged(hovering)
         }
     }
 
-    func show(expanded: Bool) {
+    func show() {
         isVisible = true
-        ignoreHoverUntilExit = false
-        collapseTask?.cancel()
-        let expand = expanded || model?.isBusy == true || model?.needsClarification == true
-        holdExpandedUntil = expand ? Date().addingTimeInterval(4) : nil
-        request(expand ? .expanded : .compact)
-        if expand { scheduleCollapse(after: 4) }
+        dismissalTask?.cancel()
+        holdExpandedUntil = Date().addingTimeInterval(4)
+        request(.expanded)
+        scheduleDismissal(after: 4)
     }
 
     func setBusy(_ busy: Bool) {
         guard isVisible else { return }
-        collapseTask?.cancel()
+        dismissalTask?.cancel()
         if busy {
             holdExpandedUntil = nil
             request(.expanded)
         } else {
-            // Keep the result readable before returning to the compact notch.
+            // Keep the result readable before hiding the notch completely.
             holdExpandedUntil = Date().addingTimeInterval(4)
-            scheduleCollapse(after: 4)
+            scheduleDismissal(after: 4)
         }
-    }
-
-    func collapse() {
-        guard isVisible, model?.isBusy != true else { return }
-        collapseTask?.cancel()
-        holdExpandedUntil = nil
-        // Clicking the collapse button must not immediately expand it again.
-        ignoreHoverUntilExit = isHovering
-        request(.compact)
     }
 
     func hide() {
         isVisible = false
         isHovering = false
-        ignoreHoverUntilExit = false
-        collapseTask?.cancel()
+        dismissalTask?.cancel()
         holdExpandedUntil = nil
         request(.hidden)
     }
 
     func shutdown() {
         isVisible = false
-        collapseTask?.cancel()
+        dismissalTask?.cancel()
         transitionTask?.cancel()
         hoverSubscription?.cancel()
         model?.systemAudio.stop()
@@ -87,37 +74,33 @@ final class VoiceNotchController {
     private func hoverChanged(_ hovering: Bool) {
         isHovering = hovering
         guard isVisible else { return }
-        if !hovering { ignoreHoverUntilExit = false }
-        guard !ignoreHoverUntilExit else { return }
-        collapseTask?.cancel()
-        if hovering {
-            request(.expanded)
-        } else {
-            scheduleCollapse(after: 0.6)
+        dismissalTask?.cancel()
+        if !hovering {
+            scheduleDismissal(after: 0.6)
         }
     }
 
-    private func scheduleCollapse(after seconds: Double) {
-        collapseTask?.cancel()
+    private func scheduleDismissal(after seconds: Double) {
+        dismissalTask?.cancel()
         guard model?.isBusy != true, model?.needsClarification != true else { return }
         let delay = max(seconds, holdExpandedUntil?.timeIntervalSinceNow ?? 0)
-        collapseTask = Task { @MainActor [weak self] in
+        dismissalTask = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(delay)) }
             catch { return }
             guard let self, self.isVisible, !self.isHovering,
                   self.model?.isBusy != true, self.model?.needsClarification != true else { return }
-            self.request(.compact)
+            self.hide()
         }
     }
 
-    private func request(_ state: DynamicNotchState) {
+    private func request(_ state: PresentationState) {
         requestedState = state
         if state == .expanded { model?.systemAudio.start() }
         else { model?.systemAudio.stop() }
         guard transitionTask == nil else { return }
 
         // Serialize the library's asynchronous transitions. A new request replaces
-        // the destination, so a late collapse cannot hide a newly started command.
+        // the destination, so a late dismissal cannot hide a newly started command.
         transitionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.transitionTask = nil }
@@ -132,10 +115,9 @@ final class VoiceNotchController {
                     skipIntermediateHides: true
                 )
                 switch state {
-                case .expanded, .compact:
+                case .expanded:
                     guard let screen = self.preferredScreen else { return }
-                    if state == .expanded { await self.notch.expand(on: screen) }
-                    else { await self.notch.compact(on: screen) }
+                    await self.notch.expand(on: screen)
                     self.notch.windowController?.window?.hidesOnDeactivate = false
                     self.notch.windowController?.window?.collectionBehavior.insert(.fullScreenAuxiliary)
                 case .hidden:
@@ -149,40 +131,6 @@ final class VoiceNotchController {
     private var preferredScreen: NSScreen? {
         // Match DynamicNotchKit's display-change handling, which uses the primary screen.
         NSScreen.screens.first
-    }
-}
-
-private struct VoiceNotchLeading: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Button { model.showVoiceNotch() } label: {
-            Image(systemName: model.isBusy ? "waveform" : "waveform.circle.fill")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.teal)
-                .frame(width: 40, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Expand Tether Voice notch")
-        .help("Show voice controls")
-    }
-}
-
-private struct VoiceNotchTrailing: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Button { model.showVoiceNotch() } label: {
-            Text(model.isBusy ? "Busy" : "⌃⌥␣")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.8))
-                .frame(width: 40, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(model.isBusy ? "Command in progress" : "Hold Control Option Space to speak")
-        .help(model.headline)
     }
 }
 
@@ -217,13 +165,13 @@ private struct VoiceNotchContent: View {
                 .help("Settings and commands")
                 Button {
                     if model.isBusy { model.cancel() }
-                    else { model.collapseVoiceNotch() }
+                    else { model.hideVoiceNotch() }
                 } label: {
                     Image(systemName: model.isBusy ? "stop.fill" : "chevron.up")
                         .frame(width: 40, height: 40).contentShape(Rectangle())
                 }
-                .accessibilityLabel(model.isBusy ? "Cancel current command" : "Collapse notch")
-                .help(model.isBusy ? "Cancel current command" : "Collapse notch")
+                .accessibilityLabel(model.isBusy ? "Cancel current command" : "Hide voice notch")
+                .help(model.isBusy ? "Cancel current command" : "Hide voice notch")
             }
             .buttonStyle(.plain)
 
