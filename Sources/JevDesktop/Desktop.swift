@@ -56,7 +56,7 @@ struct DesktopSnapshot {
 
 enum Desktop {
     static var hasAccess: Bool { AXIsProcessTrusted() }
-    private static let log = Logger(subsystem: "local.jev-use", category: "desktop")
+    private static let log = Logger(subsystem: "ai.tether.voice", category: "desktop")
     private static let browsers = ["com.brave.browser", "com.google.chrome", "com.apple.safari", "com.microsoft.edgemac", "org.mozilla.firefox"]
 
     /// Chromium-based apps (browsers, Electron, and similar) expose web content through Accessibility only on request.
@@ -185,7 +185,7 @@ enum Desktop {
 
     @MainActor
     static func capture(application: NSRunningApplication, command: String, dictation: String? = nil, includeMenus: Bool = true) async throws -> DesktopSnapshot {
-        guard hasAccess else { throw DesktopError(message: "Enable Accessibility for Desktop Voice in System Settings.") }
+        guard hasAccess else { throw DesktopError(message: "Enable Accessibility for Tether Voice in System Settings.") }
         let mainTop = NSScreen.screens.first?.frame.maxY ?? 0
         let screens = NSScreen.screens.map { screen in
             let frame = screen.visibleFrame
@@ -465,7 +465,7 @@ enum Desktop {
                         addFolder(url, named: manager.displayName(atPath: url.path), location: "on the Desktop")
                     }
                 } catch {
-                    folderAccessError = "Desktop folders could not be read. Allow Desktop folder access for Desktop Voice in System Settings → Privacy & Security → Files and Folders."
+                    folderAccessError = "Desktop folders could not be read. Allow Desktop folder access for Tether Voice in System Settings → Privacy & Security → Files and Folders."
                 }
             }
         }
@@ -492,7 +492,7 @@ enum Desktop {
                     seen[control] = -1
                     let info = read(control)
                     walked += 1
-                    // Coverage audit: `defaults write local.jev-use DumpTree -bool true` logs every walked node.
+                    // Coverage audit: `defaults write ai.tether.voice DumpTree -bool true` logs every walked node.
                     if dumpTree {
                         log.notice("node \(walked): \(info.role, privacy: .public) '\(info.name.prefix(40), privacy: .public)' dom='\(info.dom, privacy: .public)' children \(info.children.count) of \(info.allChildren)\(info.hidden ? " HIDDEN" : "")\(info.enabled ? "" : " DISABLED") in='\(container, privacy: .public)'")
                     }

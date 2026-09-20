@@ -41,7 +41,7 @@ public struct PlanStep: Codable, Equatable {
 /// Turns one spoken utterance into ordered steps with an LLM through OpenRouter. Jev still selects every on-screen target.
 public enum Planner {
     public static let defaultModel = "inception/mercury-2.5"
-    /// Overridable for benchmarking: `defaults write local.jev-use PlannerModel <openrouter model id>`.
+    /// Overridable for benchmarking: `defaults write ai.tether.voice PlannerModel <openrouter model id>`.
     public static var model: String { UserDefaults.standard.string(forKey: "PlannerModel") ?? defaultModel }
     /// Token usage of the last plan, for the log.
     public struct Usage { public let prompt: Int, completion: Int, reasoning: Int }
@@ -139,7 +139,7 @@ public enum Planner {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("Desktop Voice", forHTTPHeaderField: "X-Title")
+        request.setValue("Tether Voice", forHTTPHeaderField: "X-Title")
         request.httpBody = try requestBody(utterance: utterance, frontApp: frontApp, runningApps: runningApps)
         let (data, response) = try await URLSession.shared.data(for: request)
         try Task.checkCancellation()

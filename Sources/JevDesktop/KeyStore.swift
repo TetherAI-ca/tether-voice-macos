@@ -7,7 +7,7 @@ enum KeyStore {
 
     private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: "local.jev-use",
+         kSecAttrService as String: "ai.tether.voice",
          kSecAttrAccount as String: account]
     }
 

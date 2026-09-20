@@ -7,11 +7,11 @@ import os
 /// Nothing is recorded or stored; buffers are reduced to 32 numbers and discarded.
 final class SystemAudioMonitor: @unchecked Sendable {
     static let bandCount = 32
-    private let log = Logger(subsystem: "local.jev-use", category: "audio")
+    private let log = Logger(subsystem: "ai.tether.voice", category: "audio")
     private let state = OSAllocatedUnfairLock(initialState: (bands: [Float](repeating: 0, count: SystemAudioMonitor.bandCount), lastLoud: Date.distantPast))
     /// Slowly falling ceiling so the loudest band fills the display at any volume.
     private var ceiling: Float = 0.2
-    private let queue = DispatchQueue(label: "local.jev-use.system-audio")
+    private let queue = DispatchQueue(label: "ai.tether.voice.system-audio")
     private var tap = AudioObjectID(kAudioObjectUnknown)
     private var device = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
@@ -36,7 +36,7 @@ final class SystemAudioMonitor: @unchecked Sendable {
         do {
             let description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
             description.uuid = UUID()
-            description.name = "Desktop Voice visualiser"
+            description.name = "Tether Voice visualiser"
             description.muteBehavior = .unmuted
             description.isPrivate = true
             var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -44,7 +44,7 @@ final class SystemAudioMonitor: @unchecked Sendable {
             tap = tapID
             let outputUID = try defaultOutputUID()
             let aggregate: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "Desktop Voice visualiser",
+                kAudioAggregateDeviceNameKey: "Tether Voice visualiser",
                 kAudioAggregateDeviceUIDKey: UUID().uuidString,
                 kAudioAggregateDeviceMainSubDeviceKey: outputUID,
                 kAudioAggregateDeviceIsPrivateKey: true,

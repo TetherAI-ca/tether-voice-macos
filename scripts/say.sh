@@ -1,5 +1,5 @@
 #!/bin/bash
-# Send a typed command to the running Desktop Voice app. Usage: scripts/say.sh "Open Finder"
+# Send a typed command to the running Tether Voice app. Usage: scripts/say.sh "Open Finder"
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]]; then

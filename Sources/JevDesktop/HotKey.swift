@@ -102,7 +102,7 @@ private struct HotKeyError: LocalizedError {
 
     var errorDescription: String? {
         if code == OSStatus(eventHotKeyExistsErr) {
-            return "Control–Option–Space is already registered by another app. Free that shortcut, then restart Desktop Voice."
+            return "Control–Option–Space is already registered by another app. Free that shortcut, then restart Tether Voice."
         }
         return "\(operation) failed (macOS error \(code))."
     }
