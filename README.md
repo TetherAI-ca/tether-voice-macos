@@ -35,16 +35,22 @@ Results remain visible for four seconds, then the notch disappears. Hovering ove
 an open result keeps it readable; hovering at the top of the screen when hidden
 does not open it. Clarification questions stay visible until answered or dismissed.
 
-The expanded view contains the speech pixels, transcript, status, Settings button,
-and a Cancel button while a command is running. The up-chevron hides it when
-idle. The menu-bar icon offers **Show voice notch**, **Hide voice notch**, settings,
-and cancellation. Hiding it while busy also cancels pending work.
+The default recording view is a small line of live text. Longer commands keep the
+newest spoken words visible; the full text is available on hover. After release,
+the same view shows command progress and results. Errors and clarification
+questions can wrap to three lines. There are no pixels, logo, app title, buttons,
+or shortcut hints inside the notch.
+
+Use **Escape** to cancel, or use the menu-bar icon for **Show voice notch**,
+**Hide voice notch**, **Settings and commands**, and **Cancel current command**.
+Hiding it while busy also cancels pending work. The audio visualizer and its
+system-audio capture have been removed; microphone capture still powers speech.
 
 On displays without a physical notch, it uses the same top-edge notch presentation.
 The panel does not move keyboard focus to Tether Voice when it opens. Closing Settings
 leaves the notch hidden unless a command or clarification is pending. Typed commands
-and the explicit **Show voice notch** menu action also open it. The visualizer runs only while visible;
-the speech pixels and presentation transitions respect macOS Reduce Motion.
+and the explicit **Show voice notch** menu action also open it. Presentation
+animations respect macOS Reduce Motion.
 
 This replaces the draggable floating widget. Its saved position is no longer used.
 
@@ -56,10 +62,12 @@ with `open "$HOME/Applications/Tether Voice.app"` and check:
 - Launch and closing Settings leave no logo, shortcut icons, or panel at the notch.
 - Hovering over the camera notch while idle does not open the voice interface.
 - Holding the speech shortcut expands it without taking focus from the target app.
+- Recording shows only one small line of live text, with the latest words visible in a long sentence.
+- Releasing the shortcut keeps the transcript visible until final recognition arrives, then shows command status in the same view.
 - A command stays expanded if you move the pointer away; its result stays readable for four seconds, then disappears.
 - Hovering over a result keeps it visible; moving away hides it after the remaining result time or 0.6 seconds, whichever is longer.
 - Pressing the shortcut while the notch is hiding reopens it for the new command.
-- Escape and Cancel stop pending work; clarification questions stay visible.
+- Escape and the menu-bar Cancel action stop pending work; clarification questions stay visible and can wrap to three lines.
 - Settings and its close/Done controls return to the notch, with keys and permissions intact.
 - The menu-bar Show and Hide commands work, including while speaking.
 - Check a notched display, an external display, full-screen apps, and Reduce Motion.

@@ -41,8 +41,6 @@ final class AppModel: ObservableObject {
     private let log = Logger(subsystem: "ai.tether.voice", category: "status")
     @Published var headline = "Ready for a command" { didSet { log.notice("\(self.headline, privacy: .public) | \(self.detail, privacy: .public)") } }
     @Published var detail = "Hold Control–Option–Space. Release to act. Escape cancels." { didSet { log.notice("  \(self.detail, privacy: .public)") } }
-    /// The word the pixel field currently spells: the latest spoken word while the user speaks, otherwise nothing.
-    @Published var word: String?
     @Published var transcript = ""
     @Published var isBusy = false {
         didSet {
@@ -57,7 +55,6 @@ final class AppModel: ObservableObject {
     @Published var timing = ""
 
     let speech = SpeechInput()
-    let systemAudio = SystemAudioMonitor()
     private let hotKey = HotKey()
     private var key: String?
     /// Optional OpenRouter key: when present, the planner model turns the sentence into steps and Jev grounds each one.
@@ -73,7 +70,7 @@ final class AppModel: ObservableObject {
     private var priorCommand: String?
     private var priorAction: String?
     private var releasedAt: Date?
-    private var capturing = false
+    @Published private(set) var isCapturingSpeech = false
     /// A command spoken while a chain was still running; it starts when the chain finishes.
     private var pendingCommand: (String, NSRunningApplication)?
     private var awaitingClarification = false
@@ -111,17 +108,15 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { self?.runTyped(command) }
         }
         speech.$transcript.sink { [weak self] text in
-            guard let self, self.capturing else { return }
+            guard let self, self.isCapturingSpeech else { return }
             self.transcript = text
-            self.wordTask?.cancel(); self.wordTask = nil
-            self.word = text.split(whereSeparator: \.isWhitespace).last.map(String.init)
         }.store(in: &subscriptions)
         speech.$status.sink { [weak self] status in
-            if self?.capturing == true { self?.detail = status }
+            if self?.isCapturingSpeech == true { self?.detail = status }
         }.store(in: &subscriptions)
         speech.onFinal = { [weak self] text in
-            guard let self, self.capturing, let target = self.target else { return }
-            self.capturing = false
+            guard let self, self.isCapturingSpeech, let target = self.target else { return }
+            self.isCapturingSpeech = false
             if self.chainRunning {
                 self.pendingCommand = (text, target)
                 self.detail = "Queued: \(text)"
@@ -132,7 +127,7 @@ final class AppModel: ObservableObject {
         speech.onFailure = { [weak self] message in self?.fail(message) }
         hotKey.onPress = { [weak self] in self?.beginSpeech() }
         hotKey.onRelease = { [weak self] in
-            guard let self, self.capturing else { return }
+            guard let self, self.isCapturingSpeech else { return }
             self.releasedAt = Date()
             self.headline = "Finishing speech…"
             self.speech.finish()
@@ -240,7 +235,7 @@ final class AppModel: ObservableObject {
         guard let app = prepare() else { return }
         target = app
         settingsWindow?.orderOut(nil)
-        capturing = true
+        isCapturingSpeech = true
         isBusy = true
         // Warm the connection, and ask a Chromium or Electron app for its web content, while the user is still speaking.
         // The result is not reused: a capture without the sentence lacks the apps and addresses the sentence names.
@@ -256,7 +251,7 @@ final class AppModel: ObservableObject {
             do { try await speech.start() }
             catch is CancellationError {
                 guard generation == current else { return }
-                capturing = false
+                isCapturingSpeech = false
                 isBusy = false
                 headline = "Ready to try again"
                 detail = speech.status
@@ -298,26 +293,6 @@ final class AppModel: ObservableObject {
         settingsWindow?.orderOut(nil)
         JevClient.warmUp()
         run(text, in: app, started: Date())
-        spell(text)
-    }
-
-    /// Spell `text` one word at a time in the pixel field, then let the pixels drift again.
-    /// The pixels spell only live speech. Steps and results show as text under them, so the pixels go back to idle.
-    private func clearPixels() { if wordTask == nil { word = nil } }
-
-    /// A typed command is spelled in the pixels word by word, the way live speech is.
-    private var wordTask: Task<Void, Never>?
-    private func spell(_ command: String) {
-        wordTask?.cancel()
-        wordTask = Task {
-            for piece in command.split(whereSeparator: \.isWhitespace) {
-                word = String(piece)
-                try? await Task.sleep(nanoseconds: 260_000_000)
-                guard !Task.isCancelled else { return }
-            }
-            word = nil
-            wordTask = nil
-        }
     }
 
     private enum StepOutcome { case completed(result: String, actions: Int), stopped }
@@ -328,7 +303,6 @@ final class AppModel: ObservableObject {
         let current = generation
         transcript = command
         timing = ""
-        clearPixels()
         isBusy = true
         showCommandNotch()
         log.notice("Command: \(command, privacy: .public)")
@@ -390,7 +364,6 @@ final class AppModel: ObservableObject {
                     }
                     timing = String(format: "%.2fs total · %.2fs decision · %d action%@", Date().timeIntervalSince(started), modelSeconds, actions, actions == 1 ? "" : "s")
                 }
-                clearPixels()
                 isBusy = false
             } catch is CancellationError {
                 // The cancellation handler already updated the UI.
@@ -408,7 +381,6 @@ final class AppModel: ObservableObject {
         var app = first
         headline = "\(label)\(step.summary)"
         detail = "Executing…"
-        clearPixels()
         let keys: [String: CGKeyCode] = ["return": 36, "enter": 36, "space": 49, "escape": 53, "left": 123, "right": 124, "up": 126, "down": 125, "tab": 48]
         switch step.kind {
         case .pressKey:
@@ -475,7 +447,7 @@ final class AppModel: ObservableObject {
                 }
                 headline = "\(label)Nothing to \(step.summary.lowercased()) here"
                 detail = "No matching \(step.kind.rawValue.replacingOccurrences(of: "_", with: " ")) target in \(name(app))."
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
             headline = "\(label)Choosing…"
@@ -501,7 +473,7 @@ final class AppModel: ObservableObject {
                 }
                 headline = "\(label)Could not find \(step.target ?? step.summary)"
                 detail = "Not on screen in \(name(app))."
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
             let destructive = step.kind == .quitApp || step.kind == .menu
@@ -513,11 +485,10 @@ final class AppModel: ObservableObject {
                 priorCommand = goal
                 priorAction = "Asked the user which one they meant for '\(step.summary)'. Closest: \(top.joined(separator: "; "))."
                 awaitingClarification = true
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
             headline = "\(label)\(chosen.label)"
-            clearPixels()
             do {
                 let result = try await Desktop.perform(chosen, snapshot: current_)
                 log.notice("\(label, privacy: .public)result: \(result, privacy: .public)")
@@ -750,7 +721,7 @@ final class AppModel: ObservableObject {
             case "BLOCKED":
                 headline = recent.isEmpty ? "Can't do that here" : lastResult
                 detail = recent.isEmpty ? "Nothing on screen in \(name(app)) can do: \(goal)" : "Stopped after \(recent.count) actions: nothing on screen can continue."
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             case "WAIT":
                 try await Task.sleep(nanoseconds: 400_000_000)
@@ -761,7 +732,7 @@ final class AppModel: ObservableObject {
             if headName != nil && targetCandidate == nil {
                 recent.append(JevClient.RecentAction(action: op.id, result: "no target offered", screenChanged: false))
                 noChange += 1
-                if noChange >= 3 { headline = "Can't find it"; detail = "No target for \(op.id.lowercased()) in \(name(app))."; clearPixels(); isBusy = false; return .stopped }
+                if noChange >= 3 { headline = "Can't find it"; detail = "No target for \(op.id.lowercased()) in \(name(app))."; isBusy = false; return .stopped }
                 continue
             }
             // Return sends and submits, and it has no target to gate. In about 13 logged Returns the correct ones had confidence 0.51 or
@@ -770,7 +741,7 @@ final class AppModel: ObservableObject {
             if op.id == "PRESS_RETURN", op.confidence < 0.5 {
                 recent.append(JevClient.RecentAction(action: "PRESS_RETURN", result: "NOT performed: not sure enough that the goal asks for Return here", screenChanged: false))
                 noChange += 1
-                if noChange >= 3 { headline = lastResult; detail = "Stopped: not sure what to do next."; clearPixels(); isBusy = false; return .stopped }
+                if noChange >= 3 { headline = lastResult; detail = "Stopped: not sure what to do next."; isBusy = false; return .stopped }
                 continue
             }
             // Confidence gates: destructive picks need a clear winner; anything else only a floor.
@@ -784,7 +755,7 @@ final class AppModel: ObservableObject {
                 priorCommand = goal
                 priorAction = "Asked which one for '\(goal)'. Closest: \(top.joined(separator: "; "))."
                 awaitingClarification = true
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
 
@@ -799,7 +770,7 @@ final class AppModel: ObservableObject {
             if samePick >= 2 && !["SCROLL_DOWN", "SCROLL_UP", "SKIP_FORWARD", "SKIP_BACK"].contains(op.id) {
                 headline = lastResult
                 detail = "Stopped: \(op.id.lowercased()) \(targetCandidate?.label ?? "") was chosen three times without finishing."
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
             let before = Desktop.fingerprint(of: app)
@@ -808,7 +779,6 @@ final class AppModel: ObservableObject {
             let titleBefore = snapshot.windowTitle
             let label = targetCandidate?.label ?? op.id.replacingOccurrences(of: "_", with: " ").capitalized
             headline = label
-            clearPixels()
             var result: String
             var typed: String?
             var changeWait = 0.25
@@ -924,7 +894,7 @@ final class AppModel: ObservableObject {
             if noChange >= 3 {
                 headline = lastResult
                 detail = "Stopped: three actions changed nothing."
-                clearPixels(); isBusy = false
+                isBusy = false
                 return .stopped
             }
         }
@@ -1101,7 +1071,6 @@ final class AppModel: ObservableObject {
                 }
                 headline = "\(label)\(candidate.label)"
                 detail = "Executing in \(name(app))…"
-                clearPixels()
                 let result: String
                 do {
                     result = try await Desktop.perform(candidate, snapshot: snapshot)
@@ -1130,7 +1099,6 @@ final class AppModel: ObservableObject {
             }
             break chain
         }
-        clearPixels()
         isBusy = false
         return .stopped
     }
@@ -1141,23 +1109,21 @@ final class AppModel: ObservableObject {
         task = nil
         chainRunning = false
         pendingCommand = nil
-        capturing = false
+        isCapturingSpeech = false
         speech.cancel()
         isBusy = false
         if showStatus {
             headline = "Cancelled"
             detail = "Pending work stopped. Actions already sent cannot be recalled."
-            clearPixels()
             showCommandNotch()
         }
     }
 
     private func fail(_ message: String) {
-        capturing = false
+        isCapturingSpeech = false
         isBusy = false
         headline = "Command stopped"
         detail = message
-        clearPixels()
         showCommandNotch()
     }
 
@@ -1193,8 +1159,6 @@ final class AppModel: ObservableObject {
             detail = setupComplete ? "Hold ⌃⌥Space to speak. Release to act." : "Open Settings from the Tether Voice menu bar icon."
             transcript = ""
             timing = ""
-            wordTask?.cancel(); wordTask = nil
-            word = nil
         }
         if expanded || isBusy || needsClarification {
             notchController.show()
@@ -1223,7 +1187,6 @@ final class AppModel: ObservableObject {
         cancel(showStatus: false)
         keyTask?.cancel()
         voiceNotch?.shutdown()
-        systemAudio.stop()
         hotKey.unregister()
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         if let commandObserver { DistributedNotificationCenter.default().removeObserver(commandObserver) }
@@ -1284,7 +1247,7 @@ private struct SettingsView: View {
                 Text("Release to act. Escape stops pending work.")
                 Text("Try “Open Desktop”, “Open Brave, go to google.com and type in hello”, or “Open Codex and type this: hello”.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("The notch stays hidden until you hold the shortcut. It shows your command and result, then hides again.")
+                Text("The notch shows one small line of text as you speak, then your command status. It stays hidden when idle.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Done") { model.showVoiceNotch(expanded: false) }.disabled(!model.setupComplete)
             }

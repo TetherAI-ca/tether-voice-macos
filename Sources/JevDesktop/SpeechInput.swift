@@ -1,5 +1,4 @@
 import AVFoundation
-import Accelerate
 import Combine
 import Foundation
 import Speech
@@ -10,7 +9,6 @@ final class SpeechInput: ObservableObject {
     @Published var transcript = ""
     @Published var isListening = false
     @Published var status = ""
-    @Published var audioLevel: Double = 0
     var onFinal: ((String) -> Void)?
     var onFailure: ((String) -> Void)?
 
@@ -95,21 +93,9 @@ final class SpeechInput: ObservableObject {
         self.request = request
         let gate = OSAllocatedUnfairLock(initialState: true)
         audioGate = gate
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
             gate.withLock { acceptingAudio in
                 if acceptingAudio { request.append(buffer) }
-            }
-            guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
-            var loudest: Float = 0
-            for channel in 0..<Int(buffer.format.channelCount) {
-                var rms: Float = 0
-                vDSP_rmsqv(channels[channel], vDSP_Stride(buffer.stride), &rms, vDSP_Length(buffer.frameLength))
-                loudest = max(loudest, rms)
-            }
-            let level = Double(max(0, min(1, (20 * log10(max(loudest, 0.000_001)) + 55) / 55)))
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == current, self.isListening else { return }
-                self.audioLevel = level
             }
         }
         tapInstalled = true
@@ -196,7 +182,6 @@ final class SpeechInput: ObservableObject {
         }
         audioGate = nil
         isListening = false
-        audioLevel = 0
     }
 
     private func deliverFinal() {

@@ -5,9 +5,10 @@
 Replace the draggable voice widget with a DynamicNotchKit presentation. The user
 now wants the notch completely hidden at idle, including the logo and shortcut
 icons. It appears when they press Control–Option–Space. This replaces the earlier
-compact-at-idle and hover-to-open preference. Keep the
-current command execution, TypeSafe integration, and speech shortcut. Publish the
-customized fork as Tether Voice.
+compact-at-idle and hover-to-open preference. The latest recording UI is one small
+line of live text by default, with no pixel animation, header, buttons, or shortcut
+hints. Keep the current command execution, TypeSafe integration, and speech shortcut.
+Publish the customized fork as Tether Voice.
 
 ## Source and compatibility
 
@@ -39,9 +40,15 @@ customized fork as Tether Voice.
    Hover exit hides after the remaining result time or 0.6 seconds, whichever is
    longer. Settings hides the notch; closing it restores only a pending command or
    clarification, otherwise the notch stays hidden.
-4. Present expanded content with speech pixels, transcript, status, settings,
-   cancellation, and a Hide control. Remove the compact logo and shortcut controls. Move the existing pixel
-   drawing code to `VoicePixelField.swift` without changing its rendering algorithm.
+4. Present only live transcription or command status, in a 260-point-wide content
+   area using 13-point text and a 20-point minimum height. The library adds notch
+   clearance and padding. Keep recording to one line, truncating the start so the
+   newest words stay visible. Errors and clarification may wrap to three lines;
+   tooltips and accessibility labels expose the full message. Publish the existing
+   speech-capture state so the transcript remains visible until recognition finishes.
+   Remove `VoicePixelField.swift`, `SystemAudio.swift`, pixel word timers, and
+   microphone level calculations used only by the visualizer. Keep microphone
+   buffers feeding Apple Speech through the existing locked capture path.
 5. Retain the existing menu-bar access, with explicit Show and Hide actions. Escape
    cancels busy work and hides an idle notch. Hide cancels busy work and removes
    the notch; the next command or Show action restores it.
@@ -53,9 +60,10 @@ The primary display owns the notch, matching DynamicNotchKit's display-change
 handling. Opening it uses a nonactivating panel. Serialize `expand` and `hide`
 because they animate asynchronously. Do not enable the dependency's
 `keepVisible` behavior: an explicit Settings/Hide action must work while hovered.
-Stop the system-audio visualizer when hidden. Release timers and close
-the panel on shutdown. Honor Reduce Motion in the pixel view and configured
-presentation animations. Give icon controls accessibility labels.
+Remove the system-audio visualizer and its capture permission description. Release
+timers and close the panel on shutdown. Honor Reduce Motion in configured
+presentation animations. Settings, Show/Hide, and cancellation remain in the menu
+bar; Escape cancels busy work or hides an idle result.
 
 ## Acceptance criteria
 
@@ -64,6 +72,10 @@ presentation animations. Give icon controls accessibility labels.
 - The speech shortcut opens the notch on the primary display. Typed commands and
   the explicit Show menu action remain available.
 - Speaking and active commands remain expanded even when the pointer leaves.
+- Recording shows one small text line, with no pixels, title, logo, buttons, or footer.
+- Long transcripts show the newest words and remain visible while Apple finalizes recognition.
+- Error and clarification messages can wrap; the full message is available on hover
+  and to accessibility tools.
 - Completion stays readable for four seconds before the notch disappears. Clarification stays open until answered
   or explicitly dismissed; reopening must not clear its question.
 - Settings, cancellation, explicit Hide/Show, and rapid transitions work together.
@@ -90,15 +102,13 @@ behavior as verified.
 
 Checks completed in the implementation workspace:
 
-- Tree-sitter Swift syntax parsing passed for the manifest, app entry point, and
-  new notch and pixel renderer files. This is syntax validation, not Swift type checking.
-- The extracted pixel renderer matches the original implementation apart from its
-  imports and file-level access modifier.
+- Tree-sitter Swift syntax parsing checks changed Swift files. This is syntax
+  validation, not Swift type checking.
 - The package's exact dependency version matches the reference checkout's tag.
 - `git diff --check` passed.
-- The initial notch implementation at `1780fbd` passed macOS tests, release build,
-  and app signing in GitHub Actions. Run the same workflow for this idle-visibility
-  update; hardware behavior still needs the manual checklist.
+- The prior notch implementations at `1780fbd` and `54cdc8a` passed macOS tests,
+  release build, and app signing in GitHub Actions. Run the same workflow for this
+  text-only update; hardware behavior still needs the manual checklist.
 
 The repository includes a macOS GitHub Actions workflow for tests and a release build.
 Hardware behavior still requires the manual checklist.
