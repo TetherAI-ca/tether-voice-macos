@@ -99,6 +99,39 @@ To `https://api.typesafe.ai/v1/systemone`: your command, the app and window name
 
 Everything is logged locally: `log show --predicate 'subsystem == "ai.tether.voice"' --last 10m --info`
 
+## Browser troubleshooting
+
+Dia and Arc are recognized as Chromium browsers, alongside Chrome, Brave and Edge.
+Tether Voice requests their page accessibility tree and retries if it disappears.
+Clicks, tab switches and navigation refresh the page even when the window title
+stays the same. Page settling compares labels, values and URLs as well as structure.
+Navigation may wait briefly for the new controls to appear.
+
+After updating, try selecting a named Railway project in Dia, then switch tabs and
+repeat. If a visible card is still missing, the existing read-only probe can compare
+the browser's accessible controls with the targets Tether Voice offers to Jev:
+
+1. Quit Tether Voice, run `defaults write ai.tether.voice DebugHooks -bool true`,
+   then reopen the app.
+2. In this repository, run `sleep 5; scripts/say.sh "/probe"` and bring Dia's
+   Railway tab to the front during the five-second delay. Keep the page still
+   while the probe runs. It does not click, type, or call Jev.
+3. Read the result with:
+
+   ```sh
+   log show --predicate 'subsystem == "ai.tether.voice" AND eventMessage CONTAINS "Probe"' --last 5m --info
+   ```
+
+The summary reports browser recognition, Chromium detection, page readiness and
+the number of offered page targets. `pageReady=false` points to missing or loading
+web content. `Probe missed` lists accessible controls that did not become offered
+targets. These logs can contain page titles and control labels; remove private
+content before sharing. A card that the browser never exposes may not appear in
+either list.
+
+Disable diagnostic commands afterward with
+`defaults write ai.tether.voice DebugHooks -bool false` and restart Tether Voice.
+
 ## Develop
 
 ```sh

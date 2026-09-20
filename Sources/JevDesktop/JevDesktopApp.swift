@@ -491,6 +491,9 @@ final class AppModel: ObservableObject {
             headline = "\(label)\(chosen.label)"
             do {
                 let result = try await Desktop.perform(chosen, snapshot: current_)
+                if [.click, .menu].contains(step.kind), current_.usesWebContent || Desktop.isBrowser(app) {
+                    try await Desktop.waitForPageToSettle(app, timeout: 2)
+                }
                 log.notice("\(label, privacy: .public)result: \(result, privacy: .public)")
                 return .completed(result: result, actions: 1)
             } catch let error as DesktopError where error.stale && attempts < 2 {
@@ -521,10 +524,11 @@ final class AppModel: ObservableObject {
         let noEffect = "no visible effect"
         // A stated count is arithmetic: Jev says which step it belongs to, code repeats that step exactly.
         var count = input.count
-        var lastOffered = Set<String>()
+        var lastOffered: [PageElement] = []
         var lastClicked = Set<String>()
         var unreadable = 0
         var navigated = false
+        var pageRefreshLimit = 8
         var windowChanged = false
         let previous = awaitingClarification ? priorAction : nil
         let words = Set(goal.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 })
@@ -559,20 +563,26 @@ final class AppModel: ObservableObject {
             // with almost no page controls is a skeleton, and one that still offers exactly the old controls has not drawn the new
             // page; a person waits for it to draw, so look again (at most about 3 s).
             func pageControls(_ snapshot: DesktopSnapshot) -> Int { snapshot.candidates(of: [.control, .focus]).filter { snapshot.meta[$0.id]?.place == "page" }.count }
-            func offeredIDs(_ snapshot: DesktopSnapshot) -> Set<String> { Set(snapshot.candidates(of: [.control, .focus]).map(\.id)) }
+            func offeredState(_ snapshot: DesktopSnapshot) -> [PageElement] {
+                snapshot.candidates(of: [.control, .focus]).map { candidate in
+                    let meta = snapshot.meta[candidate.id]
+                    return PageElement(role: meta?.role ?? "", name: candidate.label, value: meta?.value,
+                                       state: "\(candidate.id)|\(meta?.place ?? "")|\(candidate.detail)")
+                }
+            }
             // A web-content window that just changed (a new note, a new view) builds its tree in steps: one capture saw the title
             // field but not yet the editor, another saw no inputs at all. Read it again until two captures offer the same things.
             if windowChanged, snapshot.usesWebContent {
                 for _ in 0..<5 {
                     try await Task.sleep(nanoseconds: 200_000_000)
                     let next = try await Desktop.capture(application: app, command: goal, dictation: dictation)
-                    let same = offeredIDs(next) == offeredIDs(snapshot)
+                    let same = offeredState(next) == offeredState(snapshot)
                     snapshot = next
                     if same { break }
                 }
             }
             windowChanged = false
-            for _ in 0..<8 where navigated && Desktop.isBrowser(app) && (pageControls(snapshot) < 5 || offeredIDs(snapshot) == lastOffered) {
+            for _ in 0..<pageRefreshLimit where navigated && Desktop.isBrowser(app) && (!snapshot.webContentReady || pageControls(snapshot) < 5 || offeredState(snapshot) == lastOffered) {
                 headline = "Waiting for the page…"
                 try await Task.sleep(nanoseconds: 400_000_000)
                 snapshot = try await Desktop.capture(application: app, command: goal, dictation: dictation)
@@ -580,9 +590,8 @@ final class AppModel: ObservableObject {
             navigated = false
             try Task.checkCancellation()
             guard generation == current else { return .stopped }
-            // The quick check after an action sees only the title, the focus and the first 400 controls. The full capture is the
-            // authority: when the offered controls differ from the last cycle's, the last action did change the screen.
-            let offered = offeredIDs(snapshot)
+            // The bounded quick check can miss a deep page change. The full offered labels and values are authoritative.
+            let offered = offeredState(snapshot)
             if let last = recent.last, last.result.hasSuffix(noEffect), offered != lastOffered {
                 recent[recent.count - 1] = JevClient.RecentAction(action: last.action, result: last.result.replacingOccurrences(of: noEffect, with: "the window's content changed"), screenChanged: false)
                 noChange = 0
@@ -839,23 +848,28 @@ final class AppModel: ObservableObject {
             }
             // Opening an app, folder or site already waited for its window inside `perform`.
             let opened = ["OPEN_URL", "OPEN_APP", "OPEN_FOLDER"].contains(op.id)
-            let changed = opened ? true : try await Desktop.waitForChange(in: app, from: before, upTo: changeWait)
+            var changed = opened ? true : try await Desktop.waitForChange(in: app, from: before, upTo: changeWait)
             // A click that itself brought another app forward (a link, a file) moves the command there. An app that was already in
             // front before the action is the user's doing and is not followed.
             if !opened, let front = NSWorkspace.shared.frontmostApplication, Desktop.isControllable(front),
                front.processIdentifier != app.processIdentifier, front.processIdentifier != frontBefore { app = front }
-            // Then let the screen hold still so the next capture sees the new state, not the transition. A web page that navigated
-            // keeps rendering after its title settles, and the quick check cannot see past 400 controls, so count its controls instead.
-            if changed, !opened {
-                if snapshot.usesWebContent, op.id == "PRESS_RETURN" || (op.id != "TYPE_TEXT" && Desktop.describe(app).title != titleBefore) {
+            // A click or tab switch can navigate while the title, focus and initial tree remain unchanged.
+            // Wait based on the operation, then check its effect again after the page has had time to render.
+            let refreshPage = (snapshot.usesWebContent || Desktop.isBrowser(app)) &&
+                BrowserSupport.shouldRefreshPage(operation: op.id, windowChanged: Desktop.describe(app).title != titleBefore)
+            if !opened {
+                if refreshPage {
                     try await Desktop.waitForPageToSettle(app, timeout: 2)
-                } else {
+                    changed = changed || Desktop.fingerprint(of: app) != before
+                } else if changed {
                     try await Desktop.waitForQuiet(in: app, quiet: 0.15, upTo: 0.5)
                 }
             }
             let after = Desktop.describe(app)
             windowChanged = after.title != titleBefore
-            navigated = op.id == "OPEN_URL" || (after.title != titleBefore && ["PRESS_RETURN", "CLICK", "GO_BACK"].contains(op.id))
+            navigated = refreshPage
+            // Most buttons update in place or just focus an input. Links and navigation keys can need a longer page read.
+            pageRefreshLimit = op.id == "CLICK" && targetCandidate.flatMap({ snapshot.meta[$0.id]?.role }) != "link" ? 3 : 8
             // Opening a site that is already showing (Google home to Google home) legitimately offers the same controls again.
             if op.id == "OPEN_URL" { lastOffered = [] }
             let scrolled = result.contains("the content moved")

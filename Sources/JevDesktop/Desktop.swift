@@ -57,14 +57,14 @@ struct DesktopSnapshot {
 enum Desktop {
     static var hasAccess: Bool { AXIsProcessTrusted() }
     private static let log = Logger(subsystem: "ai.tether.voice", category: "desktop")
-    private static let browsers = ["com.brave.browser", "com.google.chrome", "com.apple.safari", "com.microsoft.edgemac", "org.mozilla.firefox"]
 
-    /// Chromium-based apps (browsers, Electron, and similar) expose web content through Accessibility only on request.
+    /// Browser identity also controls URL routing and navigation recovery.
     static func isBrowser(_ application: NSRunningApplication) -> Bool {
-        browsers.contains(application.bundleIdentifier?.lowercased() ?? "")
+        BrowserSupport.isBrowser(application.bundleIdentifier)
     }
 
     static func usesChromium(_ application: NSRunningApplication) -> Bool {
+        if BrowserSupport.isKnownChromium(application.bundleIdentifier) { return true }
         guard let frameworks = application.bundleURL?.appendingPathComponent("Contents/Frameworks"),
               let names = try? FileManager.default.contentsOfDirectory(atPath: frameworks.path) else { return false }
         func hasRendererHelper(_ entries: [String]) -> Bool { entries.contains { $0.hasSuffix("(Renderer).app") } }
@@ -199,22 +199,15 @@ enum Desktop {
         }
     }
 
-    /// Cheap signature of the current screen: window title, focused control and the window's top-level structure.
+    /// Bounded signature of the current screen, including labels and values that can change without a new title.
     static func fingerprint(of application: NSRunningApplication) -> String {
         let app = AXUIElementCreateApplication(application.processIdentifier)
         let window = element(attribute(app, kAXFocusedWindowAttribute)) ?? element(attribute(app, kAXMainWindowAttribute))
         let focused = element(attribute(app, kAXFocusedUIElementAttribute)).map { "\(attribute($0, kAXRoleAttribute) as? String ?? "")|\(label($0))|\((attribute($0, kAXValueAttribute) as? String)?.prefix(40) ?? "")" } ?? "-"
-        var size = 0
-        if let window {
-            var pending = [window]
-            while let control = pending.popLast(), size < 400 {
-                size += 1
-                pending.append(contentsOf: read(control).children.reversed())
-            }
-        }
+        let content = pageObservation(window: window, limit: 400, requiresWebContent: false).hashValue
         // The window's own frame is part of what is on screen: moving or resizing it is a visible effect.
         let frame = window.map { "\(point(attribute($0, kAXPositionAttribute)).map { "\(Int($0.x)),\(Int($0.y))" } ?? "")/\(Self.size(attribute($0, kAXSizeAttribute)).map { "\(Int($0.width))x\(Int($0.height))" } ?? "")" } ?? "-"
-        return "\(application.processIdentifier)|\(window.map(label) ?? "-")|\(focused)|\(size)|\(frame)"
+        return "\(application.processIdentifier)|\(window.map(label) ?? "-")|\(focused)|\(content)|\(frame)"
     }
 
     /// The window title and focused control, for result descriptions.
@@ -250,12 +243,12 @@ enum Desktop {
     }
 
     private static var pokedProcesses = Set<pid_t>()
-    /// Windows that showed no web content within the wait (a native preferences window, a player without a page); not waited for again.
-    private static var windowsWithoutWebContent = Set<AXUIElement>()
+    /// Briefly skip repeated waits in native Electron windows; a later page in the same window must be able to recover.
+    private static var webContentRetries = WebContentRetryCache<AXUIElement>()
     private static let webContentLock = NSLock()
     private static var appNames: [String: (name: String, identifier: String)] = [:]
 
-    /// Chromium serialises web content for Accessibility only after a client asks. Ask once per process, then wait briefly for it.
+    /// Ask Chromium for its accessibility tree, then re-request it if it disappears after navigation.
     private static func waitForWebContent(app: AXUIElement, pid: pid_t) -> Bool {
         // Ready means a page with content exists and no page says it is still loading (Chromium reports `AXLoaded` on its web areas).
         var loading = false
@@ -277,15 +270,23 @@ enum Desktop {
             }
             return found && !loading
         }
-        if present() { return true }
         // No window means no content to wait for.
         guard let window = element(attribute(app, kAXFocusedWindowAttribute)) ?? element(attribute(app, kAXMainWindowAttribute)) else { return false }
+        func ready() -> Bool {
+            guard present() else { return false }
+            webContentLock.lock()
+            webContentRetries.recordReady(for: window)
+            webContentLock.unlock()
+            return true
+        }
+        if ready() { return true }
+        let browser = NSRunningApplication(processIdentifier: pid).map(isBrowser) ?? false
         webContentLock.lock()
-        let gaveUp = windowsWithoutWebContent.contains(window)
+        let shouldWait = webContentRetries.shouldWait(for: window, isBrowser: browser, loading: loading, now: ProcessInfo.processInfo.systemUptime)
         let firstAsk = pokedProcesses.insert(pid).inserted
         webContentLock.unlock()
-        if gaveUp { return false }
-        // Setting these makes Chromium rebuild its tree, so set them once per process and never again.
+        if !shouldWait { return false }
+        // Setting these can rebuild the tree. Request once initially, then retry only after a missing-tree delay.
         // Electron honours AXManualAccessibility; Chromium browsers honour AXEnhancedUserInterface.
         // A process asked earlier may still be building its tree (a just-opened window), so wait for it either way.
         if firstAsk {
@@ -297,7 +298,7 @@ enum Desktop {
         var askedAgain = firstAsk
         while Date().timeIntervalSince(began) < 3 {
             Thread.sleep(forTimeInterval: 0.1)
-            if present() { return true }
+            if ready() { return true }
             // Chromium can drop its tree after a navigation (seen after opening a YouTube video); ask once more when it stays away.
             if !askedAgain, Date().timeIntervalSince(began) > 0.8 {
                 askedAgain = true
@@ -308,10 +309,10 @@ enum Desktop {
         }
         log.notice("Web content \(loading ? "was still loading" : "did not appear in Accessibility", privacy: .public) for pid \(pid) after 3s")
         // A page that is still loading will finish, and a browser window always has a page (Brave was seen dropping its tree for
-        // a while); only another app's window with no page at all is remembered.
-        if loading || (NSRunningApplication(processIdentifier: pid).map(isBrowser) ?? false) { return false }
+        // a while); only another app's window with no page at all gets a short cooldown.
+        if loading || browser { return false }
         webContentLock.lock()
-        windowsWithoutWebContent.insert(window)
+        webContentRetries.recordTimeout(for: window, now: ProcessInfo.processInfo.systemUptime)
         webContentLock.unlock()
         return false
     }
@@ -770,7 +771,7 @@ enum Desktop {
             }
             add("Next tab", "Switch to the next tab in the current application.", .key(48, .maskControl), kind: .key)
             add("Previous tab", "Switch to the previous tab in the current application.", .key(48, [.maskControl, .maskShift]), kind: .key)
-            if let bundle = application.bundleIdentifier?.lowercased(), (browsers + ["com.apple.finder"]).contains(bundle) {
+            if let bundle = application.bundleIdentifier?.lowercased(), isBrowser(application) || bundle == "com.apple.finder" {
                 add("Go back", "Go back in the current browser or Finder window.", .key(33, .maskCommand), kind: .key)
                 add("Go forward", "Go forward in the current browser or Finder window.", .key(30, .maskCommand), kind: .key)
             }
@@ -845,6 +846,8 @@ enum Desktop {
         }
         let pid = application.processIdentifier
         let title = snapshot.windowTitle
+        let pageTargets = snapshot.candidates(of: [.control, .focus]).filter { snapshot.meta[$0.id]?.place == "page" }.count
+        let pageStatus = "browser=\(isBrowser(application)) chromium=\(snapshot.usesWebContent) pageReady=\(snapshot.webContentReady) pageTargets=\(pageTargets)"
         return await Task.detached(priority: .userInitiated) { () -> String in
             let app = AXUIElementCreateApplication(pid)
             var hits = Set<AXUIElement>()
@@ -929,7 +932,7 @@ enum Desktop {
             }
             let share = capableHits == 0 ? 0 : Int((Double(reached) / Double(capableHits) * 100).rounded())
             let leafShare = leafHits == 0 ? 0 : Int((Double(leafReached) / Double(leafHits) * 100).rounded())
-            let summary = "Probe \(application.localizedName ?? "?") '\(title.prefix(40))': \(hits.count) distinct hits, \(capableHits) capable, \(reached) reached = \(share)% · leaves \(leafReached) of \(leafHits) = \(leafShare)% · strict \(strictReached) of \(strictHits) = \(strictHits == 0 ? 0 : Int((Double(strictReached) / Double(strictHits) * 100).rounded()))% · \(twins) through a twin · offered \(offered.count + centreClicked.count)"
+            let summary = "Probe \(application.localizedName ?? "?") '\(title.prefix(40))': \(pageStatus) · \(hits.count) distinct hits, \(capableHits) capable, \(reached) reached = \(share)% · leaves \(leafReached) of \(leafHits) = \(leafShare)% · strict \(strictReached) of \(strictHits) = \(strictHits == 0 ? 0 : Int((Double(strictReached) / Double(strictHits) * 100).rounded()))% · \(twins) through a twin · offered \(offered.count + centreClicked.count)"
             log.notice("\(summary, privacy: .public)")
             log.notice("Probe missed (\(missed.count)): \(missed.sorted().prefix(40).joined(separator: " | "), privacy: .public)")
             log.notice("Probe hits without a capability, by role: \(incapable.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" }.joined(separator: ", "), privacy: .public)")
@@ -966,30 +969,46 @@ enum Desktop {
         }
     }
 
-    /// Single-page sites keep rendering after their title settles. Wait until the number of exposed controls stops changing.
-    static func waitForPageToSettle(_ app: NSRunningApplication, timeout: TimeInterval, stablePolls: Int = 1) async throws {
+    /// Single-page sites keep rendering after their title settles. Wait for ready, repeated content observations.
+    static func waitForPageToSettle(_ app: NSRunningApplication, timeout: TimeInterval, stablePolls: Int = 2) async throws {
         let ax = AXUIElementCreateApplication(app.processIdentifier)
-        func count() -> Int {
-            guard let window = element(attribute(ax, kAXFocusedWindowAttribute)) ?? element(attribute(ax, kAXMainWindowAttribute)) else { return 0 }
-            var pending = [window]
-            var total = 0
-            while let control = pending.popLast(), total < 3000 {
-                total += 1
-                pending.append(contentsOf: read(control).children.reversed())
-            }
-            return total
-        }
+        let requiresWebContent = isBrowser(app)
         let deadline = Date().addingTimeInterval(timeout)
-        var previous = -1
-        var stableRuns = 0
+        var stability = PageStability(stablePolls: stablePolls)
         while Date() < deadline {
             try await Task.sleep(nanoseconds: 200_000_000)
             try Task.checkCancellation()
-            let current = await Task.detached(priority: .userInitiated) { count() }.value
-            stableRuns = current == previous ? stableRuns + 1 : 0
-            previous = current
-            if stableRuns >= stablePolls { return }
+            let observation = await Task.detached(priority: .userInitiated) {
+                let window = element(attribute(ax, kAXFocusedWindowAttribute)) ?? element(attribute(ax, kAXMainWindowAttribute))
+                return pageObservation(window: window, limit: 3000, requiresWebContent: requiresWebContent)
+            }.value
+            try Task.checkCancellation()
+            if stability.observe(observation) { return }
         }
+    }
+
+    /// Compare content as well as structure: SPA pages can replace every label without changing the node count.
+    private static func pageObservation(window: AXUIElement?, limit: Int, requiresWebContent: Bool) -> PageObservation {
+        guard let window else { return PageObservation(elements: [], ready: false) }
+        var pending = [window]
+        var visited = Set<AXUIElement>()
+        var elements: [PageElement] = []
+        var foundPage = false
+        var loading = false
+        while let control = pending.popLast(), visited.count < limit {
+            guard visited.insert(control).inserted else { continue }
+            let info = read(control)
+            guard !info.hidden, info.subrole != kAXSecureTextFieldSubrole else { continue }
+            if info.role == "AXWebArea" {
+                foundPage = foundPage || !info.children.isEmpty
+                loading = loading || (attribute(control, "AXLoaded") as? Bool) == false
+            }
+            elements.append(PageElement(role: info.role, name: info.name, value: info.value,
+                                        url: info.url?.absoluteString, children: info.children.count,
+                                        state: "\(info.enabled)|\(String(describing: info.selected))|\(String(describing: info.expanded))|\(String(describing: info.frame))"))
+            pending.append(contentsOf: info.children.reversed())
+        }
+        return PageObservation(elements: elements, ready: !loading && (!requiresWebContent || foundPage))
     }
 
     /// The app's ordinary windows that are on screen: not minimised, not panels or sheets.
